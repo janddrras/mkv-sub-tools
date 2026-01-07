@@ -109,81 +109,135 @@ def list_subtitle_tracks(mkv_path):
             sub_tracks.append({"id": track["id"], "language": lang, "codec": codec})
     return sub_tracks
 
+def clean_all_embedded_subtitles(mkv_path, output_path):
+    """Automates: extract all subs -> clean them -> merge back to new MKV."""
+    info = get_mkv_info(mkv_path)
+    if not info:
+        return False
+    
+    sub_tracks = []
+    for track in info.get("tracks", []):
+        if track["type"] == "subtitles":
+            sub_tracks.append(track)
+            
+    if not sub_tracks:
+        print("No subtitle tracks found to clean.")
+        return False
+    
+    print(f"Found {len(sub_tracks)} subtitle tracks. Starting automation...")
+    
+    temp_files = []
+    merge_cmd = ["mkvmerge", "-o", str(output_path), "--no-subtitles", str(mkv_path)]
+    
+    try:
+        for track in sub_tracks:
+            t_id = track["id"]
+            props = track.get("properties", {})
+            lang = props.get("language", "und")
+            name = props.get("track_name")
+            
+            temp_raw = f"temp_raw_{t_id}.srt"
+            temp_clean = f"temp_clean_{t_id}.srt"
+            temp_files.extend([temp_raw, temp_clean])
+            
+            # Extract
+            if not extract_subtitle(mkv_path, t_id, temp_raw):
+                continue
+            
+            # Clean
+            if not clean_subtitle(temp_raw, temp_clean):
+                continue
+            
+            # Add to merge command
+            merge_cmd.extend(["--language", f"0:{lang}"])
+            if name:
+                merge_cmd.extend(["--track-name", f"0:{name}"])
+            merge_cmd.append(temp_clean)
+        
+        # Execute merge
+        print("Merging cleaned subtitles back into MKV...")
+        subprocess.run(merge_cmd, check=True, capture_output=True, text=True)
+        print(f"Successfully created cleaned MKV: {output_path}")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error during merge: {e.stderr}")
+        return False
+    finally:
+        # Cleanup
+        for f in temp_files:
+            if os.path.exists(f):
+                os.remove(f)
+
 def main():
     while True:
         print("\n--- MKV Subtitle Tools ---")
         print("1. Extract subtitle from MKV")
         print("2. Add subtitle to MKV")
         print("3. Remove subtitle from MKV")
-        print("4. Clean up subtitle (remove tags/formatting)")
-        print("5. Exit")
+        print("4. Clean up external subtitle file (remove tags/formatting)")
+        print("5. Clean ALL embedded subtitles in MKV (Automated)")
+        print("6. Exit")
         
-        choice = input("Enter choice (1-5): ").strip()
+        choice = input("Enter choice (1-6): ").strip()
         
-        if choice == "5":
+        if choice == "6":
             break
         
-        if choice == "1":
+        if choice in ["1", "2", "3", "5"]:
             mkv_path = input("Enter path to MKV file: ").strip()
             if not os.path.exists(mkv_path):
                 print("File not found.")
                 continue
             
-            tracks = list_subtitle_tracks(mkv_path)
-            if not tracks:
-                print("No subtitle tracks found in this MKV.")
-                continue
+            if choice == "1":
+                tracks = list_subtitle_tracks(mkv_path)
+                if not tracks:
+                    print("No subtitle tracks found.")
+                    continue
+                print("Subtitle tracks:")
+                for t in tracks:
+                    print(f"  ID {t['id']}: {t['language']} ({t['codec']})")
+                try:
+                    track_id = int(input("Enter Track ID to extract: "))
+                    output_path = get_modified_path(mkv_path).with_suffix(".srt")
+                    extract_subtitle(mkv_path, track_id, output_path)
+                except ValueError:
+                    print("Invalid track ID.")
             
-            print("Subtitle tracks:")
-            for t in tracks:
-                print(f"  ID {t['id']}: {t['language']} ({t['codec']})")
-            
-            try:
-                track_id = int(input("Enter Track ID to extract: "))
-                output_path = get_modified_path(mkv_path).with_suffix(".srt")
-                extract_subtitle(mkv_path, track_id, output_path)
-            except ValueError:
-                print("Invalid track ID.")
-        
-        elif choice == "2":
-            mkv_path = input("Enter path to MKV file: ").strip()
-            sub_path = input("Enter path to subtitle file (.srt/.ass): ").strip()
-            if not os.path.exists(mkv_path) or not os.path.exists(sub_path):
-                print("One or more files not found.")
-                continue
-            
-            lang = input("Enter language code (e.g. eng, optional): ").strip() or None
-            output_path = get_modified_path(mkv_path)
-            add_subtitle(mkv_path, sub_path, output_path, lang)
-            
-        elif choice == "3":
-            mkv_path = input("Enter path to MKV file: ").strip()
-            if not os.path.exists(mkv_path):
-                print("File not found.")
-                continue
-                
-            tracks = list_subtitle_tracks(mkv_path)
-            if not tracks:
-                print("No subtitle tracks found.")
-                continue
-                
-            print("Subtitle tracks:")
-            for t in tracks:
-                print(f"  ID {t['id']}: {t['language']} ({t['codec']})")
-                
-            try:
-                track_id = int(input("Enter Track ID to remove: "))
+            elif choice == "2":
+                sub_path = input("Enter path to subtitle file (.srt/.ass): ").strip()
+                if not os.path.exists(sub_path):
+                    print("Subtitle file not found.")
+                    continue
+                lang = input("Enter language code (e.g. eng, optional): ").strip() or None
                 output_path = get_modified_path(mkv_path)
-                remove_subtitle(mkv_path, track_id, output_path)
-            except ValueError:
-                print("Invalid track ID.")
+                add_subtitle(mkv_path, sub_path, output_path, lang)
+                
+            elif choice == "3":
+                tracks = list_subtitle_tracks(mkv_path)
+                if not tracks:
+                    print("No subtitle tracks found.")
+                    continue
+                print("Subtitle tracks:")
+                for t in tracks:
+                    print(f"  ID {t['id']}: {t['language']} ({t['codec']})")
+                try:
+                    track_id = int(input("Enter Track ID to remove: "))
+                    output_path = get_modified_path(mkv_path)
+                    remove_subtitle(mkv_path, track_id, output_path)
+                except ValueError:
+                    print("Invalid track ID.")
+            
+            elif choice == "5":
+                output_path = get_modified_path(mkv_path)
+                clean_all_embedded_subtitles(mkv_path, output_path)
                 
         elif choice == "4":
             sub_path = input("Enter path to subtitle file: ").strip()
             if not os.path.exists(sub_path):
                 print("File not found.")
                 continue
-            
             output_path = get_modified_path(sub_path)
             clean_subtitle(sub_path, output_path)
             
